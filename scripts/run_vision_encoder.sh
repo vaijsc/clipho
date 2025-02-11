@@ -1,0 +1,40 @@
+torchrun --nproc_per_node=6 --nnode=1 src/run_vision_encoder.py \
+    --output_dir saves/google_siglip-base-patch16-384_phobert_syllable_base_512_image_27M_all_stage-1_shuffle \
+    --model_name_or_path models/google_siglip-base-patch16-384_phobert_syllable_base_512 \
+    --freeze_vision_model=True \
+    --dataset_name image_27M \
+    --dataset_config_name all \
+    --image_data_dir /lustre/scratch/client/vinai/users/thinhphp1/text2img/vidata/images_27M/ \
+    --image_column image \
+    --caption_data_dir output/vie_captions/ \
+    --caption_column caption \
+    --remove_unused_columns=False \
+    --selected_indices_file data/tmp/indices/gemini-1.5-flash_caption_indices.json \
+    --removed_indices_file data/tmp/indices/all_removed_indices.json \
+    --custom_order=True \
+    --shuffle_data=True \
+    --do_train \
+    --num_train_epochs 20 \
+    --per_device_train_batch_size 512 \
+    --gradient_accumulation_steps 1 \
+    --enable_gradient_checkpointing=True \
+    --optim adamw_torch \
+    --learning_rate 2e-4 \
+    --weight_decay 1e-4 \
+    --adam_beta1 0.9 \
+    --adam_beta2 0.95 \
+    --adam_epsilon 1e-6 \
+    --lr_scheduler_type cosine \
+    --warmup_ratio 0.1 \
+    --dataloader_num_workers 16 \
+    --preprocessing_num_workers 16 \
+    --dataloader_persistent_workers=True \
+    --dataloader_prefetch_factor 4 \
+    --logging_first_step=True \
+    --logging_steps 179 \
+    --save_steps 892 \
+    --use_liger_kernel=True \
+    --report_to tensorboard \
+    --ddp_timeout 3600 \
+    --bf16=True \
+    --deepspeed configs/ds_z2_config.json
