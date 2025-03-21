@@ -48,7 +48,7 @@ from transformers import (
     AutoTokenizer,
     HfArgumentParser,
     Trainer,
-    TrainingArguments,load_from_disk,
+    TrainingArguments,
     set_seed,
 )
 from transformers.trainer_utils import get_last_checkpoint, seed_worker
@@ -87,36 +87,13 @@ class ModelArguments:
     model_name_or_path: str = field(
         metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"},
     )
-    config_name: Optional[str] = field(
-        default=None, metadata={"help": "Pretrained config name or path if not the same as model_name"}
-    )
-    tokenizer_name: Optional[str] = field(
-        default=None, metadata={"help": "Pretrained tokenizer name or path if not the same as model_name"}
-    )
-    image_processor_name: str = field(default=None, metadata={"help": "Name or path of preprocessor config."})
-    cache_dir: Optional[str] = field(
-        default=None, metadata={"help": "Where do you want to store the pretrained models downloaded from s3"}
-    )
-    model_revision: str = field(
-        default="main",
-        metadata={"help": "The specific model version to use (can be a branch name, tag name or commit id)."},
-    )
-    use_fast_tokenizer: bool = field(
+    use_fast_processor: bool = field(
         default=True,
         metadata={"help": "Whether to use one of the fast tokenizer (backed by the tokenizers library) or not."},
     )
     use_flash_attn_2: bool = field(
         default=False,
         metadata={"help": "Whether to use Flash Attention 2"}
-    )
-    token: str = field(
-        default=None,
-        metadata={
-            "help": (
-                "The token to use as HTTP bearer authorization for remote files. If not specified, will use the token "
-                "generated when running `huggingface-cli login` (stored in `~/.huggingface`)."
-            )
-        },
     )
     enable_gradient_checkpointing: bool = field(
         default=False, metadata={"help": "Manually enable gradient checkpoiting"}
@@ -148,20 +125,17 @@ class DataTrainingArguments:
     dataset_name: Optional[str] = field(
         default=None, metadata={"help": "The name of the dataset to use (via the datasets library)."}
     )
-    dataset_config_name: Optional[str] = field(
-        default=None, metadata={"help": "The configuration name of the dataset to use (via the datasets library)."}
-    )
-    image_data_dir: str = field(
+    image_data_paths: str = field(
         default=None, 
-        metadata={"help": "The data directory containing images data."}
+        metadata={"help": "A list of image dataset paths"}
     )
     image_column: Optional[str] = field(
         default="image",
         metadata={"help": "The name of the column in the datasets containing the full image file paths."},
     )
-    caption_data_dir: str = field(
+    caption_data_paths: str = field(
         default=None, 
-        metadata={"help": "The data directory containing captions data."}
+        metadata={"help": "A list of caption files (.jsonl files)"}
     )
     caption_column: Optional[str] = field(
         default="caption",
@@ -244,7 +218,7 @@ class Transform(torch.nn.Module):
     
 
 class ImageCaptionDataset(torch.utils.data.Dataset):
-
+    
     def __init__(self, image_dataset=None, caption_dataset=None):
         self.image_dataset = image_dataset
         self.caption_dataset = caption_dataset
@@ -259,19 +233,30 @@ class ImageCaptionDataset(torch.utils.data.Dataset):
             "attention_mask": self.caption_dataset[index]["attention_mask"],
         }
     
-    def load_from_disk(self, image_data_dir: str, caption_data_dir: str, 
+    def load_from_disk(self, image_data_paths: str, caption_data_paths: str, 
         image_column: str="image", caption_column: str="caption", 
         selected_indices_file: str=None, removed_indices_file: str=None,
         custom_order: bool=True, shuffle: bool=True
-    ):
-        image_dataset = load_from_disk(image_data_dir)
-        image_dataset = image_dataset.remove_columns([column for column in image_dataset.column_names if column != image_column])
+        ):
+        image_dataset = []
+        for file in image_data_paths:
+            try:
+                image_data_subset = load_dataset(file)
+                if image_data_subset["train"] and image_data_subset["validation"]:
+                    image_data_subset = concatenate_datasets([image_data_subset["train"], image_data_subset["validation"]])
+                image_data_subset = image_data_subset.rename_column("jpg", image_column)
+            except:
+                image_data_subset = load_from_disk(file)
+            image_data_subset = image_data_subset.remove_columns([column for column in image_data_subset.column_names if column != image_column])
+            image_dataset.append(image_data_subset)
+        image_dataset = concatenate_datasets(image_dataset)
 
-        caption_files = os.listdir(caption_data_dir)
-        caption_files = sorted(caption_files, key=lambda file: int(file.split("_")[-2].strip('m')))
-        caption_dataset = [load_dataset("json", data_files=f"{caption_data_dir}/{file}")["train"] for file in caption_files]
-        caption_dataset = concatenate_datasets(caption_dataset, axis=0)
-        caption_dataset = caption_dataset.remove_columns([column for column in caption_dataset.column_names if column != caption_column])
+        caption_dataset = []
+        for file in caption_data_paths:
+            caption_data_subset = load_dataset("json", data_files=file)["train"]
+            caption_data_subset = caption_data_subset.remove_columns([column for column in caption_data_subset.column_names if column != caption_column])
+            caption_dataset.append(caption_data_subset)
+        caption_dataset = concatenate_datasets(caption_dataset)
 
         if selected_indices_file:
             with open(selected_indices_file) as f:
@@ -299,8 +284,8 @@ class ImageCaptionDataset(torch.utils.data.Dataset):
                     selected_caption_dataset = caption_dataset.select(selected_indices)
                     remaining_caption_dataset = caption_dataset.select(remaining_indices)
 
-                    image_dataset = concatenate_datasets([remaining_image_dataset, selected_image_dataset], axis=0)
-                    caption_dataset = concatenate_datasets([remaining_caption_dataset, selected_caption_dataset], axis=0)
+                    image_dataset = concatenate_datasets([remaining_image_dataset, selected_image_dataset])
+                    caption_dataset = concatenate_datasets([remaining_caption_dataset, selected_caption_dataset])
             else:
                 image_dataset = image_dataset.select(selected_indices)
                 caption_dataset = caption_dataset.select(selected_indices)
@@ -323,8 +308,8 @@ class ImageCaptionDataset(torch.utils.data.Dataset):
                     selected_caption_dataset = caption_dataset.select(selected_indices)
                     remaining_caption_dataset = caption_dataset.select(remaining_indices)
 
-                    image_dataset = concatenate_datasets([remaining_image_dataset, selected_image_dataset], axis=0)
-                    caption_dataset = concatenate_datasets([remaining_caption_dataset, selected_caption_dataset], axis=0)
+                    image_dataset = concatenate_datasets([remaining_image_dataset, selected_image_dataset])
+                    caption_dataset = concatenate_datasets([remaining_caption_dataset, selected_caption_dataset])
             else:
                 # Shuffle the entire dataset
                 random.shuffle(selected_indices)
@@ -569,8 +554,8 @@ def main():
     print("### Start loading datasets")
     image_caption_dataset = ImageCaptionDataset()
     image_caption_dataset.load_from_disk(
-        image_data_dir=data_args.image_data_dir, 
-        caption_data_dir=data_args.caption_data_dir, 
+        image_data_paths=data_args.image_data_paths.split(','), 
+        caption_data_paths=data_args.caption_data_paths.split(','), 
         image_column=image_column, 
         caption_column=caption_column,
         selected_indices_file=data_args.selected_indices_file,
@@ -613,20 +598,10 @@ def main():
     print(caption_dataset)
 
     # 5. Load pretrained model, tokenizer, and image processor
-    if model_args.tokenizer_name:
-        tokenizer = AutoTokenizer.from_pretrained(
-            model_args.tokenizer_name,
-            cache_dir=model_args.cache_dir,
-            use_fast=model_args.use_fast_tokenizer,
-            token=model_args.token,
-            trust_remote_code=model_args.trust_remote_code,
-        )
-    elif model_args.model_name_or_path:
+    if model_args.model_name_or_path:
         tokenizer = AutoTokenizer.from_pretrained(
             model_args.model_name_or_path,
-            cache_dir=model_args.cache_dir,
-            use_fast=model_args.use_fast_tokenizer,
-            token=model_args.token,
+            use_fast=model_args.use_fast_processor,
             trust_remote_code=model_args.trust_remote_code,
         )
     else:
@@ -637,19 +612,14 @@ def main():
 
     # Load image_processor, in this script we only use this to get the mean and std for normalization.
     image_processor = AutoImageProcessor.from_pretrained(
-        model_args.image_processor_name or model_args.model_name_or_path,
-        cache_dir=model_args.cache_dir,
-        revision=model_args.model_revision,
-        token=model_args.token,
+        model_args.model_name_or_path,
+        use_fast=model_args.use_fast_processor,
         trust_remote_code=model_args.trust_remote_code,
     )
 
     if model_args.use_flash_attn_2:
         model = CustomVisionTextDualEncoderModel.from_pretrained(
             model_args.model_name_or_path,
-            cache_dir=model_args.cache_dir,
-            revision=model_args.model_revision,
-            token=model_args.token,
             trust_remote_code=model_args.trust_remote_code,
             attn_implementation="flash_attention_2",
             torch_dtype=torch.bfloat16
@@ -657,9 +627,6 @@ def main():
     else:
         model = CustomVisionTextDualEncoderModel.from_pretrained(
             model_args.model_name_or_path,
-            cache_dir=model_args.cache_dir,
-            revision=model_args.model_revision,
-            token=model_args.token,
             trust_remote_code=model_args.trust_remote_code,
         )
 
@@ -695,7 +662,7 @@ def main():
     # We need to tokenize input captions and transform the images.
     def tokenize_captions(examples):
         captions = list(examples[caption_column])
-        text_inputs = tokenizer(captions, max_length=data_args.max_seq_length, padding=True, truncation=True)
+        text_inputs = tokenizer(captions, max_length=data_args.max_seq_length, padding="max_length", truncation=True)
         examples["input_ids"] = text_inputs.input_ids
         examples["attention_mask"] = text_inputs.attention_mask
         return examples
@@ -703,7 +670,7 @@ def main():
     def transform_images(examples):
         # images = [torch.from_numpy(np.array(pil_image)).permute(2, 0, 1).to(torch.uint8) for pil_image in examples[image_column]]
         # examples["pixel_values"] = [image_transformations(image) for image in images]
-        images = examples[image_column]
+        images = [image.convert("RGB") for image in examples[image_column]]
         examples["pixel_values"] = image_processor(images, return_tensors="pt").pixel_values
         return examples
     
@@ -813,11 +780,7 @@ def main():
     kwargs = {"finetuned_from": finetuned_from, "tasks": "contrastive-image-text-modeling"}
     if data_args.dataset_name is not None:
         kwargs["dataset_tags"] = data_args.dataset_name
-        if data_args.dataset_config_name is not None:
-            kwargs["dataset_args"] = data_args.dataset_config_name
-            kwargs["dataset"] = f"{data_args.dataset_name} {data_args.dataset_config_name}"
-        else:
-            kwargs["dataset"] = data_args.dataset_name
+        kwargs["dataset"] = data_args.dataset_name
 
     if training_args.push_to_hub:
         trainer.push_to_hub(**kwargs)

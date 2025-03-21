@@ -1,6 +1,6 @@
 torchrun --nproc_per_node=4 --nnode=1 src/run_vision_encoder.py \
-    --output_dir saves/openai_clip-vit-base-patch16_phobert_syllable_base_512_image_27M_all_stage-1_new \
-    --model_name_or_path models/openai_clip-vit-base-patch16_phobert_syllable_base_512 \
+    --output_dir saves/openai_clip-vit-large-patch14-336_phobert_syllable_base_512_image_27M_all \
+    --model_name_or_path models/openai_clip-vit-large-patch14-336_phobert_syllable_base_512 \
     --freeze_vision_model=True \
     --dataset_name image_27M \
     --dataset_config_name all \
@@ -10,14 +10,14 @@ torchrun --nproc_per_node=4 --nnode=1 src/run_vision_encoder.py \
     --caption_column caption \
     --remove_unused_columns=False \
     --selected_indices_file data/tmp/indices/gemini-1.5-flash_caption_indices.json \
-    --removed_indices_file data/tmp/indices/all_removed_indices.json \
+    --removed_indices_file data/tmp/indices/invalid_caption_indices.json \
     --custom_order=True \
     --do_train \
-    --num_train_epochs 20 \
+    --num_train_epochs 30 \
     --per_device_train_batch_size 512 \
     --gradient_accumulation_steps 1 \
     --enable_gradient_checkpointing=True \
-    --optim adamw_torch \
+    --optim adamw_hf \
     --learning_rate 1.25e-4 \
     --weight_decay 1e-4 \
     --adam_beta1 0.9 \
@@ -31,7 +31,7 @@ torchrun --nproc_per_node=4 --nnode=1 src/run_vision_encoder.py \
     --dataloader_prefetch_factor 4 \
     --logging_first_step=True \
     --logging_steps 268 \
-    --save_steps 1338 \
+    --save_steps 1339 \
     --use_liger_kernel=True \
     --report_to tensorboard \
     --ddp_timeout 3600 \

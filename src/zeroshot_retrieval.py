@@ -107,13 +107,13 @@ if __name__ == "__main__":
     
     if pretrained == "":
         model_type = "hf"
+        eval_output_file = f"tmp/evaluation/retrieval_results_{data_path.split('/')[-1].replace('.json', '')}_{model_path.split('/')[-2]}_{model_path.split('/')[-1]}_{model_type}.json"
     else:
         model_type = "open_clip" 
-
-    eval_output_file = f"tmp/evaluation/retrieval_results_{data_path.split('/')[-1].replace('.json', '')}_{model_path.split('/')[-2]}_{model_path.split('/')[-1]}_{model_type}.json"
+        eval_output_file = f"tmp/evaluation/retrieval_results_{data_path.split('/')[-1].replace('.json', '')}_{model_path}_{pretrained}_{model_type}.json"
     
     if os.path.exists(eval_output_file):
-        print(f"Skip evaluate {model_path}-{model_type} on {data_path.split('/')[-1].replace('.json', '')}")
+        print(f"Eval output: {eval_output_file}")
     else:
         with open(data_path) as f:
             data = json.load(f)

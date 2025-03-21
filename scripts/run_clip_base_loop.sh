@@ -1,17 +1,17 @@
 #!/bin/bash
 
 # Define the maximum number of retries
-MAX_RETRIES=30
+MAX_RETRIES=20
 RETRY_COUNT=0
 
 # Command to run the training script
 TRAINING_CMD="torchrun --nproc_per_node=8 --nnode=1 src/run_vision_encoder.py \
-    --output_dir /lustre/scratch/client/movian/research/groups/datnqgroup/dungnn28/NLP_working/VLM/saves/openai_clip-vit-base-patch16_phobert_syllable_stage-2_no_gemini \
-    --model_name_or_path /lustre/scratch/client/movian/research/groups/datnqgroup/dungnn28/NLP_working/VLM/saves/openai_clip-vit-base-patch16_phobert_syllable_stage-1_no_gemini/checkpoint-22505 \
-    --freeze_vision_model=False \
+    --output_dir /lustre/scratch/client/movian/research/groups/datnqgroup/dungnn28/NLP_working/VLM/saves/openai_clip-vit-base-patch16_phobert_syllable_stage-1_no_gemini \
+    --model_name_or_path models/openai_clip-vit-base-patch16_phobert_syllable \
+    --freeze_vision_model=True \
     --dataset_name image_27M \
     --dataset_config_name all \
-    --image_data_dir /lustre/scratch/client/movian/asset/datasets/thinhphp1/text2img/vidata/images_27M/ \
+    --image_data_dir /lustre/scratch/client/vinai/users/thinhphp1/text2img/vidata/images_27M/ \
     --image_column image \
     --caption_data_dir output/vie_captions/ \
     --caption_column caption \
@@ -20,12 +20,12 @@ TRAINING_CMD="torchrun --nproc_per_node=8 --nnode=1 src/run_vision_encoder.py \
     --custom_order=False \
     --shuffle_data=True \
     --do_train \
-    --num_train_epochs 30 \
+    --num_train_epochs 20 \
     --per_device_train_batch_size 512 \
     --gradient_accumulation_steps 1 \
     --enable_gradient_checkpointing=True \
     --optim adamw_torch \
-    --learning_rate 5e-6 \
+    --learning_rate 5e-5 \
     --weight_decay 1e-4 \
     --adam_beta1 0.9 \
     --adam_beta2 0.95 \

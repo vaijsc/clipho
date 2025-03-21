@@ -1,31 +1,31 @@
 #!/bin/bash
 
 # Define the maximum number of retries
-MAX_RETRIES=30
+MAX_RETRIES=20
 RETRY_COUNT=0
 
 # Command to run the training script
 TRAINING_CMD="torchrun --nproc_per_node=8 --nnode=1 src/run_vision_encoder.py \
-    --output_dir /lustre/scratch/client/movian/research/groups/datnqgroup/dungnn28/NLP_working/VLM/saves/google_siglip-base-patch16-384_phobert_syllable_base_512_image_27M_all_no_gemini \
-    --model_name_or_path models/google_siglip-base-patch16-384_phobert_syllable_base_512 \
+    --output_dir saves/google_siglip-base-patch16-384_phobert_syllable_base_512_image_27M_all_stage-2_shuffle_no_gemini_fix \
+    --model_name_or_path saves/google_siglip-base-patch16-384_phobert_syllable_base_512_image_27M_all_stage-1_shuffle_no_gemini_fix/ \
     --freeze_vision_model=False \
     --dataset_name image_27M \
     --dataset_config_name all \
-    --image_data_dir /lustre/scratch/client/movian/asset/datasets/thinhphp1/text2img/vidata/images_27M \
+    --image_data_dir /lustre/scratch/client/vinai/users/thinhphp1/text2img/vidata/images_27M/ \
     --image_column image \
-    --caption_data_dir output/vie_captions/ \
+    --caption_data_dir output/vie_captions_old/ \
     --caption_column caption \
     --remove_unused_columns=False \
     --removed_indices_file data/tmp/indices/all_removed_indices_new.json \
     --custom_order=False \
     --shuffle_data=True \
     --do_train \
-    --num_train_epochs 30 \
+    --num_train_epochs 20 \
     --per_device_train_batch_size 512 \
     --gradient_accumulation_steps 1 \
     --enable_gradient_checkpointing=True \
     --optim adamw_torch \
-    --learning_rate 5e-5 \
+    --learning_rate 2.5e-4 \
     --weight_decay 1e-4 \
     --adam_beta1 0.9 \
     --adam_beta2 0.95 \
