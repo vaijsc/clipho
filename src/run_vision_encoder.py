@@ -601,6 +601,7 @@ def main():
     if model_args.model_name_or_path:
         tokenizer = AutoTokenizer.from_pretrained(
             model_args.model_name_or_path,
+            use_fast=model_args.use_fast_processor,
             trust_remote_code=model_args.trust_remote_code,
         )
     else:
