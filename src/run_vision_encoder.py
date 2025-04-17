@@ -45,6 +45,7 @@ from transformers import (
     AutoImageProcessor,
     PreTrainedModel,
     VisionTextDualEncoderModel,
+    AutoModel,
     AutoTokenizer,
     HfArgumentParser,
     Trainer,
@@ -87,6 +88,10 @@ class ModelArguments:
     model_name_or_path: str = field(
         metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"},
     )
+    use_vision_text_dual_encoder: bool = field(
+        default=True,
+        metadata={"help": "Whether to use CustomVisionTextDualEncoderModel class"},
+    )
     use_fast_processor: bool = field(
         default=True,
         metadata={"help": "Whether to use one of the fast tokenizer (backed by the tokenizers library) or not."},
@@ -111,10 +116,17 @@ class ModelArguments:
     freeze_vision_model: bool = field(
         default=False, metadata={"help": "Whether to freeze the vision model parameters or not."}
     )
+    unfreeze_vision_modules: Optional[List[str]] = field(
+        default=None, 
+        metadata={"help": "List of specific vision model submodule names (dot-separated relative to vision_model) to keep unfrozen, even if freeze_vision_model is True. Example: 'encoder.layers.10' 'encoder.layers.11.mlp'"}
+    )
     freeze_text_model: bool = field(
         default=False, metadata={"help": "Whether to freeze the text model parameters or not."}
     )
-
+    unfreeze_text_modules: Optional[List[str]] = field(
+        default=None, 
+        metadata={"help": "List of specific text model submodule names (dot-separated relative to text_model) to keep unfrozen, even if freeze_text_model is True. Example: 'encoder.layer.11' 'pooler'"}
+    )
 
 @dataclass
 class DataTrainingArguments:
@@ -150,7 +162,7 @@ class DataTrainingArguments:
         metadata={"help": "The path to indices file to remove from image_caption_dataset (a json file)."},
     )
     max_seq_length: Optional[int] = field(
-        default=512,
+        default=256,
         metadata={
             "help": (
                 "The maximum total input sequence length after tokenization. Sequences longer "
@@ -227,11 +239,17 @@ class ImageCaptionDataset(torch.utils.data.Dataset):
         return len(self.image_dataset)
     
     def __getitem__(self, index: int):
-        return {
-            "pixel_values": self.image_dataset[index]["pixel_values"],
-            "input_ids": self.caption_dataset[index]["input_ids"],
-            "attention_mask": self.caption_dataset[index]["attention_mask"],
-        }
+        if "attention_mask" in self.caption_dataset[index].keys():
+            return {
+                "pixel_values": self.image_dataset[index]["pixel_values"],
+                "input_ids": self.caption_dataset[index]["input_ids"],
+                "attention_mask": self.caption_dataset[index]["attention_mask"],
+            }
+        else:
+            return {
+                "pixel_values": self.image_dataset[index]["pixel_values"],
+                "input_ids": self.caption_dataset[index]["input_ids"],
+            }
     
     def load_from_disk(self, image_data_paths: str, caption_data_paths: str, 
         image_column: str="image", caption_column: str="caption", 
@@ -330,6 +348,7 @@ class CustomVisionTextDualEncoderModel(VisionTextDualEncoderModel):
     ):
         super().__init__(config, vision_model, text_model)
         self.logit_scale = torch.nn.Parameter(torch.tensor(self.config.logit_scale_init_value))
+
         if self.config.loss_type == "siglip_style":
             self.logit_bias = torch.nn.Parameter(torch.tensor(self.config.logit_bias_init_value))
 
@@ -478,13 +497,97 @@ class CustomTrainer(Trainer):
 def collate_fn(examples):
     pixel_values = torch.stack([example["pixel_values"] for example in examples])
     input_ids = torch.tensor([example["input_ids"] for example in examples], dtype=torch.long)
-    attention_mask = torch.tensor([example["attention_mask"] for example in examples], dtype=torch.long)
-    return {
-        "pixel_values": pixel_values,
-        "input_ids": input_ids,
-        "attention_mask": attention_mask,
-        "return_loss": True,
-    }
+
+    attention_mask = []
+    for example in examples:
+        if "attention_mask" in example.keys():
+            attention_mask.append(example["attention_mask"])
+    if attention_mask != []:
+        attention_mask = torch.tensor(attention_mask, dtype=torch.long)
+        return {
+            "pixel_values": pixel_values,
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "return_loss": True,
+        }
+    else:
+        return {
+            "pixel_values": pixel_values,
+            "input_ids": input_ids,
+            "return_loss": True,
+        }
+
+def freeze_params(module):
+    for param in module.parameters():
+        param.requires_grad = False
+
+# Function to handle selective freezing/unfreezing
+def apply_freezing_strategy(module, module_prefix: str, freeze_all: bool, unfreeze_patterns: Optional[List[str]]):
+    """
+    Applies freezing/unfreezing to a module based on arguments.
+
+    Args:
+        module: The PyTorch module (e.g., model.vision_model).
+        module_prefix: The name prefix for parameters within this module (e.g., "vision_model").
+        freeze_all: Boolean flag indicating if the entire module should generally be frozen.
+        unfreeze_patterns: List of submodule name patterns to keep unfrozen if freeze_all is True.
+    """
+    if not hasattr(module, 'named_parameters'):
+        logger.warning(f"Module '{module_prefix}' does not have named_parameters. Skipping freezing logic.")
+        return
+        
+    total_params = 0
+    trainable_params = 0
+
+    # Default: set requires_grad based on the freeze_all flag
+    initial_grad_state = not freeze_all
+    for param in module.parameters():
+        param.requires_grad = initial_grad_state
+
+    # If freezing is enabled, selectively unfreeze specific modules
+    if freeze_all and unfreeze_patterns:
+        logger.info(f"Attempting to unfreeze patterns within {module_prefix}: {unfreeze_patterns}")
+        unfrozen_by_pattern = set() # Keep track of params unfrozen by patterns
+
+        # Iterate through all named parameters to find matches
+        for name, param in module.named_parameters():
+            # The name is relative to the module passed in, e.g., "encoder.layers.10.mlp.fc1.weight"
+            # Check if this parameter's module name starts with any of the unfreeze patterns
+            should_unfreeze = False
+            for pattern in unfreeze_patterns:
+                # Match if name is exactly the pattern or starts with pattern + '.'
+                if name == pattern or name.startswith(pattern + '.'):
+                    should_unfreeze = True
+                    break
+            
+            if should_unfreeze:
+                if not param.requires_grad: # Only log/change if it was previously frozen
+                    # logger.debug(f"Unfreezing parameter '{module_prefix}.{name}' due to pattern match.")
+                    param.requires_grad = True
+                    unfrozen_by_pattern.add(f"{module_prefix}.{name}") 
+                # else: # If it was already True (e.g. freeze_all=False), no change needed
+
+        if unfrozen_by_pattern:
+            logger.info(f"Successfully unfroze {len(unfrozen_by_pattern)} parameter groups in {module_prefix} based on patterns.")
+            # You could log the specific names if needed for debugging: logger.info(f"Unfrozen parameters: {unfrozen_by_pattern}")
+        else:
+            logger.warning(f"No parameters matched the unfreeze patterns {unfreeze_patterns} within {module_prefix}. Check pattern names.")
+
+
+    # Log final status
+    for name, param in module.named_parameters():
+        total_params += 1
+        if param.requires_grad:
+            trainable_params += 1
+             
+    logger.info(
+        f"Module '{module_prefix}': Status - {'FROZEN' if freeze_all else 'TRAINABLE'}. "
+        f"Trainable parameters: {trainable_params}/{total_params}."
+    )
+    if freeze_all and not unfreeze_patterns and trainable_params > 0:
+        logger.warning(f"Module '{module_prefix}' was intended to be fully frozen, but {trainable_params} params remain trainable. Check logic.")
+    if not freeze_all and trainable_params != total_params:
+        logger.warning(f"Module '{module_prefix}' was intended to be fully trainable, but {total_params - trainable_params} params are frozen. Check logic.")
 
 
 def main():
@@ -617,36 +720,71 @@ def main():
         trust_remote_code=model_args.trust_remote_code,
     )
 
-    if model_args.use_flash_attn_2:
-        model = CustomVisionTextDualEncoderModel.from_pretrained(
-            model_args.model_name_or_path,
-            trust_remote_code=model_args.trust_remote_code,
-            attn_implementation="flash_attention_2",
-            torch_dtype=torch.bfloat16
-        )
+    if model_args.use_vision_text_dual_encoder:
+        if model_args.use_flash_attn_2:
+            model = CustomVisionTextDualEncoderModel.from_pretrained(
+                model_args.model_name_or_path,
+                trust_remote_code=model_args.trust_remote_code,
+                attn_implementation="flash_attention_2",
+                torch_dtype=torch.bfloat16
+            )
+        else:
+            model = CustomVisionTextDualEncoderModel.from_pretrained(
+                model_args.model_name_or_path,
+                trust_remote_code=model_args.trust_remote_code,
+            )
     else:
-        model = CustomVisionTextDualEncoderModel.from_pretrained(
-            model_args.model_name_or_path,
-            trust_remote_code=model_args.trust_remote_code,
-        )
+        if model_args.use_flash_attn_2:
+            model = AutoModel.from_pretrained(
+                model_args.model_name_or_path,
+                trust_remote_code=model_args.trust_remote_code,
+                attn_implementation="flash_attention_2",
+                torch_dtype=torch.bfloat16
+            )
+        else:
+            model = AutoModel.from_pretrained(
+                model_args.model_name_or_path,
+                trust_remote_code=model_args.trust_remote_code,
+            )
 
     # Manually enable gradient checkpointing
     if model_args.enable_gradient_checkpointing:
-        model.text_model.gradient_checkpointing_enable()
-        model.vision_model.gradient_checkpointing_enable()
+        if model_args.use_vision_text_dual_encoder:
+            model.text_model.gradient_checkpointing_enable()
+            model.vision_model.gradient_checkpointing_enable()
+        else:
+            model.gradient_checkpointing_enable()
 
     config = model.config
-    model.logit_scale = torch.nn.Parameter(torch.tensor(config.logit_scale_init_value))
+    if model_args.use_vision_text_dual_encoder:
+        model.logit_scale = torch.nn.Parameter(torch.tensor(config.logit_scale_init_value))
 
-    def _freeze_params(module):
-        for param in module.parameters():
-            param.requires_grad = False
+    # Apply freeze & unfreeze strategy
+    # if model_args.freeze_vision_model:
+    #     freeze_params(model.vision_model)
+    if hasattr(model, 'vision_model'):
+        logger.info(f"Applying freezing strategy to vision_model...")
+        apply_freezing_strategy(
+            module=model.vision_model,
+            module_prefix="vision_model", # Adjust if the attribute name is different
+            freeze_all=model_args.freeze_vision_model,
+            unfreeze_patterns=model_args.unfreeze_vision_modules
+        )
+    else:
+        logger.warning("Model does not have a 'vision_model' attribute. Skipping vision model freezing.")
 
-    if model_args.freeze_vision_model:
-        _freeze_params(model.vision_model)
-
-    if model_args.freeze_text_model:
-        _freeze_params(model.text_model)
+    # if model_args.freeze_text_model:
+    #     freeze_params(model.text_model)
+    if hasattr(model, 'text_model'):
+        logger.info(f"Applying freezing strategy to text_model...")
+        apply_freezing_strategy(
+            module=model.text_model,
+            module_prefix="text_model", # Adjust if the attribute name is different
+            freeze_all=model_args.freeze_text_model,
+            unfreeze_patterns=model_args.unfreeze_text_modules
+        )
+    else:
+        logger.warning("Model does not have a 'text_model' attribute. Skipping text model freezing.")
 
     # Preprocessing the datasets.
     # We need to tokenize inputs and targets.
@@ -664,7 +802,8 @@ def main():
         captions = list(examples[caption_column])
         text_inputs = tokenizer(captions, max_length=data_args.max_seq_length, padding="max_length", truncation=True)
         examples["input_ids"] = text_inputs.input_ids
-        examples["attention_mask"] = text_inputs.attention_mask
+        if "attention_mask" in text_inputs.keys():
+            examples["attention_mask"] = text_inputs.attention_mask
         return examples
 
     def transform_images(examples):
